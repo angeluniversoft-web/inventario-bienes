@@ -1,1 +1,73 @@
 
+name: Construir APK (Android)
+
+# Se dispara al subir a la raíz del repositorio un archivo proyecto-apk*.zip
+# (el zip se sube SIN descomprimir; aquí se descomprime y se compila).
+on:
+  push:
+    paths:
+      - 'proyecto-apk*.zip'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obtener repositorio
+        uses: actions/checkout@v4
+
+      - name: Descomprimir proyecto
+        run: |
+          set -e
+          ZIP=$(ls proyecto-apk*.zip 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$ZIP" ]; then echo "::error::No hay ningún proyecto-apk*.zip en la raíz del repositorio"; ls -la; exit 1; fi
+          echo "Usando $ZIP"
+          rm -rf build-src && mkdir build-src
+          unzip -q "$ZIP" -d build-src
+          SETTINGS=$(find build-src -name settings.gradle | head -n 1)
+          if [ -z "$SETTINGS" ]; then echo "::error::El zip no contiene settings.gradle"; find build-src | head -50; exit 1; fi
+          PROJ=$(dirname "$SETTINGS")
+          echo "PROJ=$PROJ" >> "$GITHUB_ENV"
+          echo "Proyecto en $PROJ"
+          ls "$PROJ/app/src/main/assets/www" || { echo "::error::Faltan los archivos de la app (assets/www)"; exit 1; }
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Compilar APK firmado
+        run: |
+          cd "$PROJ"
+          gradle assembleRelease --no-daemon --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/InventarioBienes.apk"
+          ls -la "$GITHUB_WORKSPACE/InventarioBienes.apk"
+
+      - name: Guardar como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: InventarioBienes-apk
+          path: InventarioBienes.apk
+
+      - name: Publicar en Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-v${{ github.run_number }}
+          name: Inventario de Bienes · Android v${{ github.run_number }}
+          body: |
+            APK firmado con la firma fija del proyecto (se instala encima de la versión anterior sin perder datos).
+            Descargue **InventarioBienes.apk** en el celular y ábralo para instalar.
+          files: InventarioBienes.apk
